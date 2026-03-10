@@ -21,6 +21,10 @@ from huggingface_hub import hf_hub_download
 logger = logging.getLogger(__name__)
 
 WAN_HF_REPO_ID = "Wan-AI/Wan2.1-I2V-14B-480P"
+WAN_LOCAL_DIR = os.environ.get(
+    "WAN_CKPT_DIR",
+    "/checkpoint/jepa_core/shared/models/huggingface/Wan2.1-I2V-14B-480P",
+)
 
 
 def hf_download(filename: str) -> str:
@@ -30,9 +34,13 @@ def hf_download(filename: str) -> str:
 
 
 def ensure_file(path: str | None, hf_filename: str) -> str:
-    """Return a valid local path: use `path` if it exists, otherwise download from HuggingFace."""
+    """Return a valid local path: use `path` if it exists, otherwise check WAN_LOCAL_DIR, otherwise download from HuggingFace."""
     if path is not None and os.path.exists(path):
         return path
+    local_path = os.path.join(WAN_LOCAL_DIR, hf_filename)
+    if os.path.exists(local_path):
+        logger.info(f"Using local Wan checkpoint: {local_path}")
+        return local_path
     return hf_download(hf_filename)
 
 from torch.distributions import Beta
@@ -255,12 +263,17 @@ class WANPolicyHead(ActionHead):
         if not config.skip_component_loading:
             dit_dir = self.model.diffusion_model_pretrained_path
             if dit_dir is None or not os.path.isdir(dit_dir):
-                index_path = hf_hub_download(repo_id=WAN_HF_REPO_ID, filename="diffusion_pytorch_model.safetensors.index.json")
-                dit_dir = os.path.dirname(index_path)
-                with open(index_path, 'r') as f:
-                    index = json.load(f)
-                for shard_file in set(index["weight_map"].values()):
-                    hf_hub_download(repo_id=WAN_HF_REPO_ID, filename=shard_file)
+                local_index = os.path.join(WAN_LOCAL_DIR, "diffusion_pytorch_model.safetensors.index.json")
+                if os.path.exists(local_index):
+                    logger.info(f"Using local DiT checkpoint dir: {WAN_LOCAL_DIR}")
+                    dit_dir = WAN_LOCAL_DIR
+                else:
+                    index_path = hf_hub_download(repo_id=WAN_HF_REPO_ID, filename="diffusion_pytorch_model.safetensors.index.json")
+                    dit_dir = os.path.dirname(index_path)
+                    with open(index_path, 'r') as f:
+                        index = json.load(f)
+                    for shard_file in set(index["weight_map"].values()):
+                        hf_hub_download(repo_id=WAN_HF_REPO_ID, filename=shard_file)
 
             if dit_dir is not None:
                 safetensors_path = os.path.join(dit_dir, "diffusion_pytorch_model.safetensors")

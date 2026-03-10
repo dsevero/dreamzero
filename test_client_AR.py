@@ -226,9 +226,9 @@ def test_ar_droid_policy_server(
             obs = _make_zero_observation(server_config, prompt=prompt, session_id=session_id)
             logging.info(f"Inference {i + 1}/{num_chunks}: prompt='{prompt}'")
             t0 = time.time()
-            actions = client.infer(obs)
+            response = client.infer(obs)
             dt = time.time() - t0
-            _log_action(actions, dt)
+            _log_action(response, dt)
 
         logging.info("Sending reset...")
         client.reset({})
@@ -254,18 +254,18 @@ def test_ar_droid_policy_server(
     logging.info("=== Initial: frame [0] ===")
     obs = _make_obs_from_video(camera_frames, [0], prompt, session_id)
     t0 = time.time()
-    actions = client.infer(obs)
+    response = client.infer(obs)
     dt = time.time() - t0
-    _log_action(actions, dt)
+    _log_action(response, dt)
 
     # Subsequent chunks: send 4 frames at a time
     for chunk_idx, frame_indices in enumerate(chunks):
         logging.info(f"=== Chunk {chunk_idx}: frames {frame_indices} ===")
         obs = _make_obs_from_video(camera_frames, frame_indices, prompt, session_id)
         t0 = time.time()
-        actions = client.infer(obs)
+        response = client.infer(obs)
         dt = time.time() - t0
-        _log_action(actions, dt)
+        _log_action(response, dt)
 
     # Reset triggers video save on the server
     logging.info("Sending reset to save video...")
@@ -274,16 +274,20 @@ def test_ar_droid_policy_server(
     logging.info("Done.")
 
 
-def _log_action(actions: np.ndarray, dt: float) -> None:
-    """Pretty-print action shape, range, and timing."""
-    assert isinstance(actions, np.ndarray), f"Expected numpy array, got {type(actions)}"
-    assert actions.ndim == 2, f"Expected 2D array, got shape {actions.shape}"
+def _log_action(response: dict, dt: float) -> None:
+    """Pretty-print action shape, video shape, and timing from an infer() response."""
+    assert isinstance(response, dict), f"Expected dict response, got {type(response)}"
+    actions = response["actions"]
+    video_frames = response["video_frames"]
+    assert isinstance(actions, np.ndarray), f"Expected numpy array for actions, got {type(actions)}"
+    assert actions.ndim == 2, f"Expected 2D actions array, got shape {actions.shape}"
     assert actions.shape[-1] == 8, (
         f"Expected 8 action dims (7 joints + 1 gripper), got {actions.shape[-1]}"
     )
     logging.info(
-        f"  Action shape: {actions.shape}, "
+        f"  Actions shape: {actions.shape}, "
         f"range: [{actions.min():.4f}, {actions.max():.4f}], "
+        f"video_frames: {video_frames.shape}, "
         f"time: {dt:.2f}s"
     )
 

@@ -36,6 +36,7 @@ class Args:
     port: int = 8000
     timeout_seconds: int = 50000  # 10 hours default, configurable
     model_path: str = "./checkpoints/dreamzero"
+    output_dir: str | None = None  # Directory to save predicted videos. Defaults to <model_path>/../real_world_eval_gen_<date>_<index>/<checkpoint_name>
     enable_dit_cache: bool = False
     index: int = 0
     max_chunk_size: int | None = None  # If None, use config value. Otherwise override max_chunk_size for inference.
@@ -286,24 +287,51 @@ class ARDroidRoboarenaPolicy:
         
         # Store video predictions for potential saving
         self.video_across_time.append(video_pred)
-        
+
+        # Decode current chunk video so the client can condition on it
+        video_frames = self._decode_video_chunk(video_pred)
+
         # Extract and convert action
         action_chunk_dict = result_batch.act
-        
+
         # Convert Batch to dict
         action_dict = {}
         for k in dir(action_chunk_dict):
             if k.startswith("action."):
                 action_dict[k] = getattr(action_chunk_dict, k)
-        
+
         action = self._convert_action(action_dict)
-        
+
         # Update first call flag
         if self._is_first_call:
             self._is_first_call = False
-        
-        return action
+
+        return {"actions": action, "video_frames": video_frames}
     
+    def _decode_video_chunk(self, video_pred: torch.Tensor) -> np.ndarray:
+        """Decode a single video latent chunk to uint8 frames.
+
+        Returns (T, H_stitched, W_stitched, C) uint8 numpy array where the layout is:
+          - Top half:          wrist camera (full width)
+          - Bottom-left half:  left (exterior_image_0) camera
+          - Bottom-right half: right (exterior_image_1) camera
+        """
+        frames = self._policy.trained_model.action_head.vae.decode(
+            video_pred,
+            tiled=self._policy.trained_model.action_head.tiled,
+            tile_size=(
+                self._policy.trained_model.action_head.tile_size_height,
+                self._policy.trained_model.action_head.tile_size_width,
+            ),
+            tile_stride=(
+                self._policy.trained_model.action_head.tile_stride_height,
+                self._policy.trained_model.action_head.tile_stride_width,
+            ),
+        )
+        frames = rearrange(frames, "B C T H W -> B T H W C")
+        frames = frames[0]  # (T, H, W, C)
+        return ((frames.float() + 1) * 127.5).clip(0, 255).cpu().numpy().astype(np.uint8)
+
     def _reset_state(self, save_video: bool = True) -> None:
         """Internal method to reset policy state.
         
@@ -697,12 +725,16 @@ class WebsocketPolicyServer:
                     self.video_across_time = []
                     break
                 except Exception:
-                    await websocket.send(traceback.format_exc())
-                    await websocket.close(
-                        code=websockets.frames.CloseCode.INTERNAL_ERROR,
-                        reason="Internal server error. Traceback included in previous frame.",
-                    )
-                    raise
+                    logger.error("Error processing request:\n%s", traceback.format_exc())
+                    try:
+                        await websocket.send(traceback.format_exc())
+                        await websocket.close(
+                            code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                            reason="Internal server error. Traceback included in previous frame.",
+                        )
+                    except Exception:
+                        logger.error("Failed to send error to client: %s", traceback.format_exc())
+                    break
         finally:
             logger.info(f"Rank 0: Client session ended. Sending idle signal (2) to workers.")
             signal_tensor.fill_(2)  # Set tensor value to 2
@@ -778,10 +810,13 @@ def main(args: Args) -> None:
         logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
         # Create output directory for videos
         # Extract parent directory and checkpoint name from model_path
-        parent_dir = os.path.dirname(model_path)
-        date_suffix = datetime.datetime.now().strftime("%Y%m%d")
-        checkpoint_name = os.path.basename(model_path)
-        output_dir = os.path.join(parent_dir, f"real_world_eval_gen_{date_suffix}_{args.index}", checkpoint_name)
+        if args.output_dir:
+            output_dir = args.output_dir
+        else:
+            parent_dir = os.path.dirname(model_path)
+            date_suffix = datetime.datetime.now().strftime("%Y%m%d")
+            checkpoint_name = os.path.basename(model_path)
+            output_dir = os.path.join(parent_dir, f"real_world_eval_gen_{date_suffix}_{args.index}", checkpoint_name)
         os.makedirs(output_dir, exist_ok=True)
         logging.info("Videos will be saved to: %s", output_dir)
     else:
