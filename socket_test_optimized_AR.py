@@ -306,7 +306,7 @@ class ARDroidRoboarenaPolicy:
         if self._is_first_call:
             self._is_first_call = False
 
-        return {"actions": action, "video_frames": video_frames}
+        return {"actions_joint_position_deltas": action, "video_frames": video_frames}
     
     def _decode_video_chunk(self, video_pred: torch.Tensor) -> np.ndarray:
         """Decode a single video latent chunk to uint8 frames.
@@ -687,7 +687,9 @@ class WebsocketPolicyServer:
                             out[k] = getattr(batch, k)
                         return out
                     action_chunk_dict = batch_to_dict(action_chunk_dict)
-                    await websocket.send(packer.pack(action_chunk_dict))
+                    # Convert to explicit action space key
+                    action = self._convert_action(action_chunk_dict)
+                    await websocket.send(packer.pack({"actions_joint_position_deltas": action}))
 
                 except websockets.ConnectionClosed:
                     logger.info(f"Connection from {websocket.remote_address} closed")
